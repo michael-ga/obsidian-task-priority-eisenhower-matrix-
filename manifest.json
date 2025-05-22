@@ -1,0 +1,17 @@
+{
+  "id": "Gen-tools",
+  "name": "Michael tools",
+  "version": "0.1.0",
+  "author": "Michael gabbay",
+  "description": "A brief description of what your plugin does.",
+  "main": "dist/main.js",
+  "minAppVersion": "0.9.7",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^4.0.0"
+  }
+}
