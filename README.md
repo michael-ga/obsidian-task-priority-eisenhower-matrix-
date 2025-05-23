@@ -21,7 +21,7 @@ This is a plugin for Obsidian that enhances your note-taking experience by provi
 
 ## Eisenhower Matrix Visualization
 
-![Eisenhower Matrix](matrix.png)
+![Eisenhower Matrix](images/matrix.png)
 ## Example Tasks
 Here are some example tasks to demonstrate how to use the Eisenhower Matrix:
 
