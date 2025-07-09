@@ -17,10 +17,12 @@ interface EisenhowerTask {
     lastDoneDate?: string; // for daily/weekly habits
     taskType?: "repeated-daily" | "scheduled" | "regular"; // new field for task classification
     scheduledDate?: string; // for ⏳ YYYY-MM-DD tasks
+    startDate?: string; // for ➕ YYYY-MM-DD tasks
     // Streak properties for Option A
     currentStreak?: number; // current consecutive streak
     maxStreak?: number; // personal best streak
     lastStreakDate?: string; // last date streak was updated
+    attributeName?: string; // for [attribute::...] habits
 }
 function parseTask(line: string, file: string, lineNumber: number): EisenhowerTask | null {
     // Fix bracket property detection
@@ -81,8 +83,22 @@ function parseTask(line: string, file: string, lineNumber: number): EisenhowerTa
         taskType = "repeated-daily";
     }
     
+    // Add start date parsing
+    let startDate: string | undefined = undefined;
+    const startMatch = /➕\s*(\d{4}-\d{2}-\d{2})/.exec(line);
+    if (startMatch) {
+        startDate = startMatch[1];
+    }
+    
+    // Add attribute parsing
+    let attributeName: string | undefined = undefined;
+    const attributeMatch = /\[attribute::\s*([^\]\s]+)\]/i.exec(line);
+    if (attributeMatch) {
+        attributeName = attributeMatch[1];
+    }
+    
     // Return task if it has any of the special properties
-    if (isUrgent === undefined && isImportant === undefined && !habitType && !accumulated && !scheduledDate) return null;
+    if (isUrgent === undefined && isImportant === undefined && !habitType && !accumulated && !scheduledDate && !startDate && !attributeName) return null;
     
     return {
         content: line,
@@ -97,9 +113,11 @@ function parseTask(line: string, file: string, lineNumber: number): EisenhowerTa
         lastDoneDate,
         taskType,
         scheduledDate,
+        startDate,
         currentStreak,
         maxStreak,
         lastStreakDate,
+        attributeName,
     };
 }
 function groupTasks(tasks: EisenhowerTask[]) {
@@ -109,6 +127,41 @@ function groupTasks(tasks: EisenhowerTask[]) {
         "Urgent but Not Important": tasks.filter((t: EisenhowerTask) => t.importance === "low" && t.urgency === "high"),
         "Neither Urgent nor Important": tasks.filter((t: EisenhowerTask) => t.importance === "low" && t.urgency === "low"),
     };
+}
+function sortHabitTasks<T extends EisenhowerTask>(tasks: T[], sortKey: 'progress' | 'startDate' | 'default', direction: 'asc' | 'desc'): T[] {
+    if (sortKey === 'default') {
+        return [...tasks];
+    }
+
+    const modifier = direction === 'asc' ? 1 : -1;
+
+    return [...tasks].sort((a, b) => {
+        if (sortKey === 'progress') {
+            const aIsAccumulated = a.accumulated ?? false;
+            const bIsAccumulated = b.accumulated ?? false;
+            if (aIsAccumulated && !bIsAccumulated) return -1;
+            if (!aIsAccumulated && bIsAccumulated) return 1;
+            if (aIsAccumulated && bIsAccumulated) {
+                // Natural sort is descending (b-a). Modifier will flip it if needed.
+                return ((b.accumulatedCount ?? 0) - (a.accumulatedCount ?? 0)) * modifier;
+            }
+            return 0;
+        }
+
+        if (sortKey === 'startDate') {
+            const aDate = a.startDate;
+            const bDate = b.startDate;
+            if (aDate && !bDate) return -1; // Tasks with dates always come first
+            if (!aDate && bDate) return 1;
+            if (aDate && bDate) {
+                // Natural sort is ascending (a.localeCompare(b)). Modifier will flip it.
+                return aDate.localeCompare(bDate) * modifier;
+            }
+            return 0;
+        }
+
+        return 0;
+    });
 }
 function renderEisenhowerMatrix(groups: ReturnType<typeof groupTasks>): string {
     return `# Eisenhower Matrix\n\n` +
@@ -336,6 +389,7 @@ interface MyPluginSettings {
     matrixUrgencyEmoji: string;
     matrixDurationEmoji: string;
     enableStreakTracking: boolean;
+    dailyNotePath: string;
 }
 
 const DEFAULT_SETTINGS: MyPluginSettings = {
@@ -344,7 +398,8 @@ const DEFAULT_SETTINGS: MyPluginSettings = {
     matrixImportanceEmoji: "⭐",
     matrixUrgencyEmoji: "🔥",
     matrixDurationEmoji: "⏳",
-    enableStreakTracking: true
+    enableStreakTracking: true,
+    dailyNotePath: ""
 };
 
 // Add workspace pane view types
@@ -738,6 +793,9 @@ class DailyHabitTrackerView extends ItemView {
     private _refreshTimer: number | null = null;
     private _lastTasksJson: string = "";
     private _lastModifiedTimes: Map<string, number> = new Map();
+    private isGrouped: boolean = false;
+    private currentSortOrder: 'progress' | 'startDate' | 'default' = 'default';
+    private currentSortDirection: 'asc' | 'desc' = 'asc';
     constructor(leaf: WorkspaceLeaf, plugin: MyPlugin) {
         super(leaf);
         this.plugin = plugin;
@@ -824,9 +882,20 @@ class DailyHabitTrackerView extends ItemView {
             }
             .habit-tracker-header {
                 flex-shrink: 0;
-                margin-bottom: 16px;
                 border-bottom: 1px solid #eee;
                 padding-bottom: 8px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                flex-wrap: wrap;
+                gap: 8px;
+                margin-bottom: 16px;
+            }
+            .habit-tracker-controls {
+                display: flex;
+                align-items: center;
+                gap: 16px;
+                font-size: 0.9em;
             }
             .habit-tracker-content {
                 flex: 1;
@@ -1111,14 +1180,69 @@ class DailyHabitTrackerView extends ItemView {
         
         // Create header
         const header = mainContainer.createDiv({ cls: "habit-tracker-header" });
-        header.createEl("h2", { text: "Daily Habit Tracker" });
+        header.createEl("h2", { text: "Daily Habit Tracker" }).style.margin = "0";
+
+        // Add UI Controls for sorting and grouping
+        const controlsContainer = header.createDiv({ cls: "habit-tracker-controls" });
+
+        // Grouping Toggle
+        const groupToggleLabel = controlsContainer.createEl("label", { attr: { style: "display: flex; align-items: center; gap: 4px; cursor: pointer;" } });
+        const groupToggle = groupToggleLabel.createEl("input", { type: "checkbox" });
+        groupToggle.checked = this.isGrouped;
+        groupToggle.onchange = () => {
+            this.isGrouped = groupToggle.checked;
+            this.renderUI(); // Re-render
+        };
+        groupToggleLabel.appendText("Group by Type");
+
+        // Sorting Dropdown
+        const sortDropdownLabel = controlsContainer.createEl("label", { attr: { style: "display: flex; align-items: center; gap: 4px; cursor: pointer;" } });
+        sortDropdownLabel.appendText("Sort by:");
+        const sortDropdown = sortDropdownLabel.createEl("select");
+        sortDropdown.createEl("option", { value: "default", text: "Default" });
+        sortDropdown.createEl("option", { value: "progress", text: "Progress" });
+        sortDropdown.createEl("option", { value: "startDate", text: "Start Date" });
+        sortDropdown.value = this.currentSortOrder;
+        sortDropdown.onchange = () => {
+            this.currentSortOrder = sortDropdown.value as 'progress' | 'startDate' | 'default';
+            // Set default direction when sort type changes
+            if (this.currentSortOrder === 'progress') {
+                this.currentSortDirection = 'desc'; // Progress is better when high
+            } else {
+                this.currentSortDirection = 'asc'; // Start date is better when early
+            }
+            this.renderUI(); // Re-render
+        };
+
+        // Add Sort Direction Toggle Button
+        if (this.currentSortOrder !== 'default') {
+            const sortDirectionToggle = controlsContainer.createEl("button", {
+                text: this.currentSortDirection === 'asc' ? '↑ Asc' : '↓ Desc',
+                attr: { 
+                    style: "padding: 4px 8px; font-size: 0.9em; cursor: pointer; border-radius: 4px; border: 1px solid #ccc; background: #f0f0f0;",
+                    title: "Toggle sort direction"
+                }
+            });
+            sortDirectionToggle.onclick = () => {
+                this.currentSortDirection = this.currentSortDirection === 'asc' ? 'desc' : 'asc';
+                this.renderUI();
+            };
+        }
         
         // Create scrollable content area
         const content = mainContainer.createDiv({ cls: "habit-tracker-content" });
         
-        this.createHabitSection(content, "🔄 Daily Habits", this.habitTasks.filter(t => t.type === "daily"));
-        this.createHabitSection(content, "🔁 Weekly Habits", this.habitTasks.filter(t => t.type === "weekly"));
-        this.createHabitSection(content, "⏳ Today's Scheduled Tasks", this.habitTasks.filter(t => t.type === "scheduled"));
+        // Apply sorting and grouping
+        const processedTasks = sortHabitTasks(this.habitTasks, this.currentSortOrder, this.currentSortDirection);
+
+        if (this.isGrouped) {
+            this.createHabitSection(content, "🪙 Accumulated Habits", processedTasks.filter(t => t.accumulated));
+            this.createHabitSection(content, "🔁 Simple Habits", processedTasks.filter(t => !t.accumulated));
+        } else {
+            this.createHabitSection(content, "🔄 Daily Habits", processedTasks.filter(t => t.type === "daily"));
+            this.createHabitSection(content, "🔁 Weekly Habits", processedTasks.filter(t => t.type === "weekly"));
+            this.createHabitSection(content, "⏳ Today's Scheduled Tasks", processedTasks.filter(t => t.type === "scheduled"));
+        }
     }
     createHabitSection(container: HTMLElement, title: string, tasks: (EisenhowerTask & { type: "daily" | "weekly" | "scheduled" })[]) {
         const section = container.createDiv({ cls: "habit-tracker-section" });
@@ -1255,7 +1379,14 @@ class DailyHabitTrackerView extends ItemView {
                 }
                 checkbox.addEventListener("change", async () => {
                     if (checkbox.checked) {
-                        await this.plugin._markHabitTaskDoneWithDate(task.file, task.line, task.content);
+                        // Check if this is an attribute-based habit
+                        if (task.attributeName && this.plugin.settings.dailyNotePath) {
+                            await this.plugin._handleAttributeHabitCompletion(task);
+                        } else {
+                            // Fallback to the original implementation
+                            await this.plugin._markHabitTaskDoneWithDate(task.file, task.line, task.content);
+                        }
+
                         checkbox.disabled = true;
                         label.style.textDecoration = "line-through";
                         label.style.opacity = "0.6";
@@ -1658,6 +1789,45 @@ export default class MyPlugin extends Plugin {
         }
     }
 
+    public async _handleAttributeHabitCompletion(task: EisenhowerTask) {
+        if (!this.settings.dailyNotePath) {
+            new Notice("Please set the daily notes path in the plugin settings.");
+            return;
+        }
+        if (!task.attributeName) return;
+
+        try {
+            // Step 1: Update the daily note's frontmatter
+            await this._updateDailyNoteAttribute(task.attributeName);
+
+            // Step 2: Mark the original task as done for UI/streak consistency
+            await this._markHabitTaskDoneWithDate(task.file, task.line, task.content);
+
+        } catch (error) {
+            console.error("Failed to handle attribute habit completion:", error);
+            new Notice("Error updating daily note. See console for details.");
+        }
+    }
+
+    private async _updateDailyNoteAttribute(attributeName: string) {
+        const today = getTodayDateStr();
+        const dailyNotePath = `${this.settings.dailyNotePath}/${today}.md`;
+        
+        let file = this.app.vault.getAbstractFileByPath(dailyNotePath);
+        if (!file || !(file instanceof TFile)) {
+            // Create the file with basic frontmatter if it doesn't exist
+            file = await this.app.vault.create(dailyNotePath, "---\n---\n\n");
+            new Notice(`Created daily note: ${today}.md`);
+        }
+
+        if (file instanceof TFile) {
+            await this.app.fileManager.processFrontMatter(file, (fm) => {
+                fm[attributeName] = (fm[attributeName] || 0) + 1; // Set to 1 or increment
+            });
+            new Notice(`Updated '${attributeName}' in today's daily note.`);
+        }
+    }
+
     async _markEisenhowerTaskDone(filePath: string, lineNumber: number, originalLine: string) {
         const file = this.app.vault.getAbstractFileByPath(filePath);
         if (!(file instanceof TFile)) {
@@ -1753,6 +1923,18 @@ class MyPluginSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.enableStreakTracking)
                 .onChange(async (value) => {
                     this.plugin.settings.enableStreakTracking = value;
+                    await this.plugin.saveSettings();
+                }));
+        
+        new Setting(containerEl)
+            .setName("Daily notes path")
+            .setDesc("The path to the folder where your daily notes are stored for attribute-based habits. Example: 'Journal/Dailies'")
+            .addText(text => text
+                .setPlaceholder("Path/to/daily/notes")
+                .setValue(this.plugin.settings.dailyNotePath)
+                .onChange(async (value) => {
+                    // Normalize path by removing leading/trailing slashes
+                    this.plugin.settings.dailyNotePath = value.replace(/^\/|\/$/g, '');
                     await this.plugin.saveSettings();
                 }));
     }
