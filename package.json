@@ -1,5 +1,5 @@
 {
-  "name": "my-obsidian-plugin",
+  "name": "habit-hacker",
   "version": "1.0.0",
   "description": "A custom plugin for Obsidian.",
   "main": "dist/main.js",
@@ -8,14 +8,13 @@
     "watch": "tsc --watch",
     "clean": "rm -rf dist",
     "prepare": "npm run clean && npm run build",
-    "deploy": "copy dist\\main.js \"C:\\Users\\mgabbay\\OneDrive - Intel Corporation\\Obsidian\\Personal\\.obsidian\\plugins\\michael_plugin\\main.js\" && copy manifest.json \"C:\\Users\\mgabbay\\OneDrive - Intel Corporation\\Obsidian\\Personal\\.obsidian\\plugins\\michael_plugin\\manifest.json\"",
     "build-and-deploy": "npm run build && npm run deploy"
   },
   "keywords": [
     "obsidian",
     "plugin"
   ],
-  "author": "Your Name",
+  "author": "Michael Gabbay",
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.0.0",
